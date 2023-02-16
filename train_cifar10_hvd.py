@@ -40,8 +40,8 @@ import pdb
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=5e-4, type=float, help='learning rate') # resnets.. 1e-3, Vit..1e-4
 parser.add_argument('--opt', default="adam")
-parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-parser.add_argument('--resume_path', type=str, help='resume file path from checkpoint')
+parser.add_argument('--resume', default=False, action='store_true', help='resume from checkpoint')
+parser.add_argument('--resume_path', type=str, default='./OUTPUT/*.pth', help='resume file path from checkpoint')
 parser.add_argument('--model_save_folder', default='./OUTPUT', type=str, help='folder used to save model')
 parser.add_argument('--noaug', action='store_true', help='disable use randomaug')
 parser.add_argument('--noamp', action='store_true', help='disable mixed precision training. for older pytorch versions')
@@ -51,7 +51,7 @@ parser.add_argument('--net', default='swin')
 parser.add_argument('--bs', default='512')
 parser.add_argument('--size', default="32")
 parser.add_argument('--device', default="mtgpu", type=str)
-parser.add_argument('--n_epochs', type=int, default='200')
+parser.add_argument('--n_epochs', type=int, default='400')
 parser.add_argument('--seed', type=int, default='121')
 parser.add_argument('--patch', default='4', type=int, help="patch for ViT")
 parser.add_argument('--dimhead', default="512", type=int)
@@ -274,21 +274,21 @@ optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=net.named_param
 # use cosine scheduling
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_epochs)
 
-def load_checkpoint(model, optimizer, lr_scheduler):
-    checkpoint = torch.load(args.resume_path, map_location='cpu')
+def load_checkpoint(model, resume_path, optimizer, lr_scheduler):
+    checkpoint = torch.load(resume_path, map_location='cpu')
     msg = model.load_state_dict(checkpoint['model'], strict=False)
-    max_accuracy = 0.0
-    if 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-        start_epoch = checkpoint['epoch']
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+    start_epoch = checkpoint['epoch']
+
     del checkpoint
-    #torch.cuda.empty_cache()
-    return max_accuracy
+    return start_epoch
+ 
 
 if args.resume:
     # Load checkpoint.
-    load_checkpoint(net, optimizer, scheduler)
+    print('==> Resume model paramter from ', args.resume_path)
+    start_epoch = load_checkpoint(net, args.resume_path, optimizer, scheduler) + 1
 
 hvd.broadcast_parameters(net.state_dict(), root_rank=0)
 hvd.broadcast_optimizer_state(optimizer, root_rank=0)
@@ -410,7 +410,7 @@ for epoch in range(start_epoch, args.n_epochs):
     start = time.time()
     trainloader.sampler.set_epoch(epoch)
     trainloss = train(epoch)
-    if hvd.rank() == 0 and (epoch % 100 == 99):
+    if hvd.rank() == 0 and (epoch % 100 == 50):
         save_checkpoint(epoch, net_without_hvd, 0.0, optimizer, scheduler)
     val_loss, acc = test(epoch)
     
