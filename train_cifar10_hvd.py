@@ -38,7 +38,7 @@ import pdb
 
 # parsers
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-parser.add_argument('--lr', default=1e-4, type=float, help='learning rate') # resnets.. 1e-3, Vit..1e-4
+parser.add_argument('--lr', default=5e-4, type=float, help='learning rate') # resnets.. 1e-3, Vit..1e-4
 parser.add_argument('--opt', default="adam")
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--resume_path', type=str, help='resume file path from checkpoint')
@@ -60,13 +60,13 @@ parser.add_argument('--convkernel', default='8', type=int, help="parameter for c
 args = parser.parse_args()
 
 # take in args
-usewandb = ~args.nowandb
-if usewandb:
-    import wandb
-    watermark = "{}_lr{}".format(args.net, args.lr)
-    wandb.init(project="cifar10-challange",
-            name=watermark, anonymous="allow")
-    wandb.config.update(args)
+#usewandb = ~args.nowandb
+#if usewandb:
+#    import wandb
+#    watermark = "{}_lr{}".format(args.net, args.lr)
+#    wandb.init(project="cifar10-challange",
+#            name=watermark, anonymous="allow")
+#    wandb.config.update(args)
 
 bs = int(args.bs)
 imsize = int(args.size)
@@ -118,7 +118,7 @@ transform_test = transforms.Compose([
 if aug:  
     N = 2; M = 14;
     transform_train.transforms.insert(0, RandAugment(N, M))
-
+torch.set_num_threads(4)
 # Prepare dataset
 num_tasks = hvd.size()
 global_rank = hvd.rank()
@@ -127,13 +127,13 @@ trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True
 sampler_train = torch.utils.data.DistributedSampler(
     trainset, num_replicas=num_tasks, rank=global_rank, shuffle=True
 )
-trainloader = torch.utils.data.DataLoader(trainset, sampler=sampler_train, batch_size=bs, num_workers=8)
+trainloader = torch.utils.data.DataLoader(trainset, sampler=sampler_train, batch_size=bs, num_workers=4)
 
 testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
 sampler_val = torch.utils.data.distributed.DistributedSampler(
     testset, num_replicas=num_tasks, rank=global_rank, shuffle=False
 )
-testloader = torch.utils.data.DataLoader(testset, sampler=sampler_val, batch_size=100, shuffle=False, num_workers=8)
+testloader = torch.utils.data.DataLoader(testset, sampler=sampler_val, batch_size=100, shuffle=False, num_workers=32)
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
@@ -310,8 +310,20 @@ def train(epoch):
             loss = criterion(outputs, targets)
         scaler.scale(loss).backward()
         optimizer.synchronize()
+        has_nan = False
+        for n, p in net.named_parameters():
+            if p.grad is not None:
+                if torch.any(torch.isnan(p.grad)):
+                    has_nan = True
+                    break
+                if torch.any(p.grad > 20):
+                    has_nan = True
+                    break
+                if has_nan:
+                    optimizer.zero_grad()
         with optimizer.skip_synchronize():
-            scaler.step(optimizer)
+            if not has_nan:
+                scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad()
 
@@ -383,8 +395,8 @@ def test(epoch):
 list_loss = []
 list_acc = []
 
-if usewandb:
-    wandb.watch(net)
+#if usewandb:
+#    wandb.watch(net)
 
 def save_checkpoint(epoch, model, max_accuracy, optimizer, lr_scheduler):
     save_state = {'model': model.state_dict(),
@@ -408,9 +420,9 @@ for epoch in range(start_epoch, args.n_epochs):
     list_acc.append(acc)
     
     # Log training..
-    if usewandb:
-        wandb.log({'epoch': epoch, 'train_loss': trainloss, 'val_loss': val_loss, "val_acc": acc, "lr": optimizer.param_groups[0]["lr"],
-        "epoch_time": time.time()-start})
+    #if usewandb:
+    #    wandb.log({'epoch': epoch, 'train_loss': trainloss, 'val_loss': val_loss, "val_acc": acc, "lr": optimizer.param_groups[0]["lr"],
+    #    "epoch_time": time.time()-start})
 
     # Write out csv..
     with open(f'log/log_{args.net}_patch{args.patch}.csv', 'w') as f:
@@ -420,6 +432,6 @@ for epoch in range(start_epoch, args.n_epochs):
     #print(list_loss)
 
 # writeout wandb
-if usewandb:
-    wandb.save("wandb_{}.h5".format(args.net))
+#if usewandb:
+#    wandb.save("wandb_{}.h5".format(args.net))
     
